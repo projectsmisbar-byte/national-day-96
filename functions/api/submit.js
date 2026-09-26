@@ -1,5 +1,5 @@
 const SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbyrbXmMQ-Wbrvkfges1dm_GsM-Q6gOirZRHbjMBlj2IHcjWdfT18xxhV7rgkv2rM3tz6A/exec";
+  "https://script.google.com/macros/s/AKfycbydJWVzPiZJapy7hfw5YJ_V7vn5HVxo6XMZFF2yAxIwtUsL-47woL6_423q0sr1sjGw8w/exec";
 
 // نفس حدّ الواجهة (25 ميجابايت)
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
