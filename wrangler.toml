@@ -1,0 +1,16 @@
+name = "national-day-96"
+pages_build_output_dir = "."
+compatibility_date = "2026-09-01"
+
+# These bindings matter for `wrangler pages dev` (local testing).
+# On the Cloudflare dashboard (production), add the same bindings under:
+# Workers & Pages > national-day-96 > Settings > Functions > Bindings.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "national-day-96-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "national-day-96-uploads"
