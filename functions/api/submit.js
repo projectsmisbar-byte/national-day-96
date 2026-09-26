@@ -1,132 +1,101 @@
-// Cloudflare Pages Function: POST /api/submit
-// Bindings required:
-//   DB       -> D1 database (submissions / entries)
-//   UPLOADS  -> R2 bucket
 
-const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbyrbXmMQ-Wbrvkfges1dm_GsM-Q6gOirZRHbjMBlj2IHcjWdfT18xxhV7rgkv2rM3tz6A/exec";
+
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 
-      "Content-Type": "application/json; charset=utf-8",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    },
-  });
-}
-
-function badRequest(message) {
-  return json({ ok: false, error: message }, 400);
-}
-
-// 1. حل مشكلة 405 عبر معالجة CORS Preflight
-export async function onRequestOptions() {
-  return new Response(null, {
-    status: 204,
     headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    },
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store"
+    }
   });
 }
 
-export async function onRequestPost(context) {
-  const { request, env } = context;
+function toBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  }
+  return btoa(binary);
+}
 
-  let form;
+export async function onRequestPost({ request }) {
   try {
-    form = await request.formData();
-  } catch {
-    return badRequest("طلب غير صالح.");
-  }
+    const form = await request.formData();
 
-  // دعم استلام المسميات المزدوجة لتفادي أي اختلاف في الواجهة
-  const name = (form.get("name") || "").toString().trim();
-  const phone = (form.get("phone") || "").toString().trim();
-  const email = (form.get("email") || "").toString().trim();
-  const path = (form.get("path") || form.get("track") || "").toString().trim();
-  const description = (form.get("description") || form.get("idea") || "").toString().trim();
-  const file = form.get("file") || form.get("image"); // File | null
+    const fullName = String(
+      form.get("name") || form.get("fullName") || ""
+    ).trim();
+    const phone = String(form.get("phone") || "").trim();
+    const email = String(form.get("email") || "").trim();
+    const title = String(
+      form.get("title") || form.get("path") || form.get("track") || ""
+    ).trim();
+    const description = String(
+      form.get("description") || form.get("idea") || ""
+    ).trim();
 
-  // --- التحقق من البيانات الأساسية ---
-  if (!name || name.length > 200) return badRequest("الاسم مطلوب.");
-  if (!phone || phone.length > 30) return badRequest("رقم الجوال مطلوب.");
-  if (!email || email.length > 200 || !EMAIL_RE.test(email)) {
-    return badRequest("البريد الإلكتروني غير صالح.");
-  }
-  if (!description || description.length > 1000) {
-    return badRequest("وصف الفكرة مطلوب.");
-  }
-
-  const entryUid = crypto.randomUUID();
-  let fileKey = null;
-  let fileName = null;
-  let fileType = null;
-
-  // رفع الملف لمخزن R2 عند توفره
-  if (file && typeof file === "object" && "arrayBuffer" in file && file.size > 0) {
-    if (file.size > MAX_FILE_BYTES) {
-      return badRequest("حجم الملف أكبر من الحد المسموح (20 ميجابايت).");
-    }
-    if (!env.UPLOADS) {
-      return json({ ok: false, error: "تخزين الملفات R2 غير مُفعّل على الخادم." }, 500);
+    if (!fullName || !phone || !email || !description) {
+      return json({ ok: false, error: "يرجى إكمال البيانات المطلوبة." }, 400);
     }
 
-    const safeName = (file.name || "file").replace(/[^\w.\-\u0600-\u06FF ]+/g, "_").slice(0, 150);
-    fileKey = `entries/${entryUid}/${safeName}`;
-    fileName = file.name || safeName;
-    fileType = file.type || "application/octet-stream";
+    const payload = {
+      fullName,
+      phone,
+      email,
+      title,
+      description,
+      consent: true
+    };
 
-    await env.UPLOADS.put(fileKey, file.stream(), {
-      httpMetadata: { contentType: fileType },
+    const file = form.get("file") || form.get("image");
+
+    if (file && typeof file.arrayBuffer === "function" && file.size > 0) {
+      if (file.size > MAX_FILE_BYTES) {
+        return json({ ok: false, error: "الحد الأقصى للملف 10 ميجابايت." }, 400);
+      }
+
+      if (!["image/jpeg", "image/png", "application/pdf"].includes(file.type)) {
+        return json({ ok: false, error: "يسمح بملفات JPG وPNG وPDF فقط." }, 400);
+      }
+
+      payload.fileName = file.name;
+      payload.fileType = file.type;
+      payload.fileBase64 = toBase64(await file.arrayBuffer());
+    }
+
+    const response = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      redirect: "follow"
     });
-  }
 
-  const submittedAt = new Date().toISOString();
-  const ipHash = await hashIp(request.headers.get("CF-Connecting-IP") || "");
+    const result = await response.json();
 
-  if (!env.DB) {
-    return json({ ok: false, error: "قاعدة البيانات D1 غير مُفعّلة على الخادم." }, 500);
-  }
-
-  // الإدراج المزدوج المتوافق مع جدول submissions وجدول entries
-  try {
-    await env.DB.prepare(
-      `INSERT INTO submissions (name, phone, email, track, idea, image_url)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-      .bind(name, phone, email, path, description, fileKey)
-      .run();
-
-    return json({ ok: true, message: "تمت إضافة المشاركة بنجاح!", entryUid });
-  } catch (err1) {
-    // محاولة الإدراج في جدول entries في حال عدم وجود submissions
-    try {
-      await env.DB.prepare(
-        `INSERT INTO entries (entry_uid, name, phone, email, path, description, file_key, file_name, file_type, submitted_at, ip_hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-        .bind(entryUid, name, phone, email, path, description, fileKey, fileName, fileType, submittedAt, ipHash)
-        .run();
-
-      return json({ ok: true, message: "تمت إضافة المشاركة بنجاح!", entryUid });
-    } catch (err2) {
-      return json({ ok: false, error: "خطأ حفظ القاعدة: " + err2.message }, 500);
+    if (!response.ok || !result.success) {
+      return json({
+        ok: false,
+        error: result.message || "تعذر حفظ المشاركة."
+      }, 502);
     }
+
+    return json({
+      ok: true,
+      message: "تم استلام مشاركتك بنجاح!"
+    });
+  } catch (error) {
+    return json({
+      ok: false,
+      error: "حدث خطأ أثناء إرسال المشاركة."
+    }, 500);
   }
 }
 
-export async function onRequestGet() {
+export function onRequestGet() {
   return json({ ok: false, error: "Method not allowed" }, 405);
-}
-
-async function hashIp(ip) {
-  if (!ip) return null;
-  const enc = new TextEncoder().encode(ip);
-  const digest = await crypto.subtle.digest("SHA-256", enc);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
